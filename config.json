@@ -1,4 +1,8 @@
 {
     "zkServer": "127.0.0.1:2181",
-    "zkDataPath": "/nginx"
+    "zkDataPath": "/nginx",
+    "combine": [
+        "D:/Users/StAR/Documents/DevProjects/zk-agent/test.tmpl#D:/Users/StAR/Documents/DevProjects/zk-agent/test.cnf"
+    ],
+    "command": ""
 }

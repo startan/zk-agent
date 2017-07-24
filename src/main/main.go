@@ -1,13 +1,19 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"text/template"
 	"time"
 
-	"encoding/json"
+	"bytes"
 
 	"github.com/samuel/go-zookeeper/zk"
 )
@@ -17,7 +23,7 @@ var kZkData *ZkData = nil
 func main() {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println(err) // 这里的err其实就是panic传入的内容，55
+			fmt.Println(err)
 		}
 	}()
 	fmt.Println("Welcome to zk-agent.")
@@ -66,6 +72,10 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 		zkServers = []string{val}
 	case []string:
 		zkServers = zkServerOpt.([]string)
+	case []interface{}:
+		for _, v := range zkServerOpt.([]interface{}) {
+			zkServers = append(zkServers, v.(string))
+		}
 	}
 	// setup connection
 	conn, event, err := zk.Connect(zkServers, 10*time.Second)
@@ -83,13 +93,44 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 		zkDataPaths = []string{val}
 	case []string:
 		zkDataPaths = zkDataPathOpt.([]string)
+	case []interface{}:
+		for _, v := range zkDataPathOpt.([]interface{}) {
+			zkDataPaths = append(zkDataPaths, v.(string))
+		}
 	}
 	zkData, _ /*events*/, err := watchZkPaths(zkDataPaths, conn)
 	if err != nil {
 		return nil, err
 	}
+	// TODO Event listener
 	kZkData = zkData
 	fmt.Println(kZkData)
+	// Generate target file
+	combineOpt := config["combine"]
+	var combines []string
+	switch combineOpt.(type) {
+	case string:
+		val := combineOpt.(string)
+		combines = []string{val}
+	case []string:
+		combines = combineOpt.([]string)
+	case []interface{}:
+		for _, v := range combineOpt.([]interface{}) {
+			combines = append(combines, v.(string))
+		}
+	}
+	for _, v := range combines {
+		tmplAndTarget := strings.Split(v, "#")
+		if len(tmplAndTarget) != 2 {
+			return nil, errors.New("Invalid `combine` format.")
+		}
+		tmpl := tmplAndTarget[0]
+		target := tmplAndTarget[1]
+		err := rebuildDataFile(kZkData, tmpl, target)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return event, nil
 }
 
@@ -178,4 +219,54 @@ func watchZkPaths(paths []string, conn *zk.Conn) (zkData *ZkData, events []<-cha
 		events = append(events, event)
 	}
 	return zkData, events, nil
+}
+
+func rebuildDataFile(zkData *ZkData, tmplPath string, targetPath string) error {
+	data := zkData.Data
+	tdata, err := ioutil.ReadFile(tmplPath)
+	if err != nil {
+		return err
+	}
+	tmplData := string(tdata)
+	basename := path.Base(targetPath)
+	tmpl, err := template.New(basename).Funcs(template.FuncMap{"dat": getByKey}).Parse(tmplData)
+	if err != nil {
+		return err
+	}
+	buffer := bytes.NewBuffer([]byte{})
+	tmpl.Execute(buffer, data)
+	fmt.Println(buffer.String())
+	return nil
+}
+
+func getByKey(data interface{}, keys ...string) (res interface{}) {
+	defer func() {
+		err := recover()
+		if err != nil {
+			fmt.Println(err)
+			res = nil
+		}
+	}()
+	for _, k := range keys {
+	start:
+		rdata := reflect.ValueOf(data)
+		switch rdata.Kind() {
+		case reflect.Map:
+			data = rdata.MapIndex(reflect.ValueOf(k)).Interface()
+		case reflect.Ptr:
+			data = rdata.Elem()
+			goto start
+		case reflect.Array:
+			continue
+		case reflect.Slice:
+			idx, err := strconv.Atoi(k)
+			if err != nil {
+				panic(err)
+			}
+			data = rdata.Index(idx).Interface()
+		default:
+			data = rdata.FieldByName(k).Interface()
+		}
+	}
+	return data
 }
