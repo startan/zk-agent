@@ -1,19 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path"
 	"reflect"
 	"strconv"
 	"strings"
 	"text/template"
 	"time"
-
-	"bytes"
 
 	"github.com/samuel/go-zookeeper/zk"
 )
@@ -98,13 +98,14 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			zkDataPaths = append(zkDataPaths, v.(string))
 		}
 	}
-	zkData, _ /*events*/, err := watchZkPaths(zkDataPaths, conn)
+	zkData, events, err := watchZkPaths(zkDataPaths, conn)
 	if err != nil {
 		return nil, err
 	}
 	// TODO Event listener
 	kZkData = zkData
-	fmt.Println(kZkData)
+	listenZkEvents(events)
+
 	// Generate target file
 	combineOpt := config["combine"]
 	var combines []string
@@ -154,16 +155,16 @@ func (self *ZkData) String() string {
 	return ""
 }
 
-func (self *ZkData) fillDatas(paths []string) error {
+func (self *ZkData) fillDatas(paths []string) (events []<-chan zk.Event, err error) {
 	conn := self.Conn
 	for _, _path := range paths {
-		childs, stat, err := conn.Children(_path)
+		childs, stat, event, err := conn.ChildrenW(_path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bData, _, err := conn.Get(_path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		val := string(bData)
 		node := ZkNode{
@@ -181,8 +182,9 @@ func (self *ZkData) fillDatas(paths []string) error {
 			}
 			self.fillDatas(subPaths)
 		}
+		events = append(events, event)
 	}
-	return nil
+	return events, nil
 }
 
 func watchZkPaths(paths []string, conn *zk.Conn) (zkData *ZkData, events []<-chan zk.Event, err error) {
@@ -214,11 +216,44 @@ func watchZkPaths(paths []string, conn *zk.Conn) (zkData *ZkData, events []<-cha
 				subPath := path.Join(_path, v)
 				subPaths = append(subPaths, subPath)
 			}
-			zkData.fillDatas(subPaths)
+			es, err := zkData.fillDatas(subPaths)
+			if err != nil {
+				return nil, nil, err
+			}
+			events = append(events, es...)
 		}
 		events = append(events, event)
 	}
 	return zkData, events, nil
+}
+
+func listenZkEvents(eventChans []<-chan zk.Event) {
+	for _, eventChan := range eventChans {
+		go listenZkEvent(eventChan)
+	}
+}
+
+func listenZkEvent(eventChan <-chan zk.Event) {
+	fmt.Println("listenZkEvent starting...")
+	for {
+		event, isAlive := <-eventChan
+		if !isAlive {
+			fmt.Println("event closed.")
+			break
+		}
+		switch event.Type {
+		case zk.EventNodeCreated:
+			fmt.Println("create: " + event.Path)
+		case zk.EventNodeDeleted:
+			fmt.Println("delete: " + event.Path)
+		case zk.EventNodeDataChanged:
+			fmt.Println("change: " + event.Path)
+		case zk.EventNodeChildrenChanged:
+			fmt.Println("childenChanged: " + event.Path)
+		default:
+			fmt.Println(event)
+		}
+	}
 }
 
 func rebuildDataFile(zkData *ZkData, tmplPath string, targetPath string) error {
@@ -235,7 +270,11 @@ func rebuildDataFile(zkData *ZkData, tmplPath string, targetPath string) error {
 	}
 	buffer := bytes.NewBuffer([]byte{})
 	tmpl.Execute(buffer, data)
-	fmt.Println(buffer.String())
+	targetData := []byte(buffer.String())
+	err = ioutil.WriteFile(targetPath, targetData, os.ModePerm)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
