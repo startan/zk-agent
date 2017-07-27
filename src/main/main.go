@@ -29,7 +29,7 @@ func main() {
 	fmt.Println("Welcome to zk-agent.")
 	configPath := flag.String("config", "", "Location of configuration file")
 	// FOR Debug begin
-	debugPath := "D:/Users/StAR/Documents/DevProjects/zk-agent/config.json"
+	debugPath := "/Users/tan/Documents/GitHub/zk-agent/config.json"
 	configPath = &debugPath
 	// FOR Debug end
 
@@ -78,7 +78,7 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 		}
 	}
 	// setup connection
-	conn, event, err := zk.Connect(zkServers, 10*time.Second)
+	conn, eventChan, err := zk.Connect(zkServers, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -98,13 +98,12 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			zkDataPaths = append(zkDataPaths, v.(string))
 		}
 	}
-	zkData, events, err := watchZkPaths(zkDataPaths, conn)
+	zkData, err := CreateZkData(zkDataPaths, conn)
 	if err != nil {
 		return nil, err
 	}
 	// TODO Event listener
 	kZkData = zkData
-	listenZkEvents(events)
 
 	// Generate target file
 	combineOpt := config["combine"]
@@ -120,19 +119,57 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			combines = append(combines, v.(string))
 		}
 	}
+
+	var tmpl, target string
 	for _, v := range combines {
 		tmplAndTarget := strings.Split(v, "#")
 		if len(tmplAndTarget) != 2 {
 			return nil, errors.New("Invalid `combine` format.")
 		}
-		tmpl := tmplAndTarget[0]
-		target := tmplAndTarget[1]
+		tmpl = tmplAndTarget[0]
+		target = tmplAndTarget[1]
 		err := rebuildDataFile(kZkData, tmpl, target)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return event, nil
+
+	// Keep Listening
+	keventChan := make(chan zk.Event, 10)
+	go func() {
+		for {
+			event, ok := <-eventChan
+			if !ok {
+				close(keventChan)
+				return
+			}
+			var err error
+			switch event.Type {
+			case zk.EventNodeDeleted:
+				fmt.Println("NodeDeleted: " + event.Path)
+				delete(kZkData.Data, event.Path)
+				err = rebuildDataFile(kZkData, tmpl, target)
+			case zk.EventNodeDataChanged:
+				fmt.Println("NodeDataChanged: " + event.Path)
+				kZkData.GetNodesW([]string{event.Path})
+				err = rebuildDataFile(kZkData, tmpl, target)
+			case zk.EventNodeChildrenChanged:
+				fmt.Println("NodeChildrenChanged: " + event.Path)
+				kZkData.GetNodesW([]string{event.Path})
+				err = rebuildDataFile(kZkData, tmpl, target)
+			default:
+				fmt.Println(event)
+			}
+			// TODO NodeDeleted NodeChildrenChanged 两个事件重叠
+			if err != nil {
+				// Warn
+				fmt.Println(err)
+			}
+			keventChan <- event
+		}
+	}()
+
+	return keventChan, nil
 }
 
 type ZkData struct {
@@ -155,16 +192,16 @@ func (self *ZkData) String() string {
 	return ""
 }
 
-func (self *ZkData) fillDatas(paths []string) (events []<-chan zk.Event, err error) {
+func (self *ZkData) GetNodesW(paths []string) (err error) {
 	conn := self.Conn
 	for _, _path := range paths {
-		childs, stat, event, err := conn.ChildrenW(_path)
+		childs, stat, _, err := conn.ChildrenW(_path)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		bData, _, err := conn.Get(_path)
+		bData, _, _, err := conn.GetW(_path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		val := string(bData)
 		node := ZkNode{
@@ -180,80 +217,25 @@ func (self *ZkData) fillDatas(paths []string) (events []<-chan zk.Event, err err
 				subPath := path.Join(_path, v)
 				subPaths = append(subPaths, subPath)
 			}
-			self.fillDatas(subPaths)
+			err := self.GetNodesW(subPaths)
+			if err != nil {
+				return err
+			}
 		}
-		events = append(events, event)
 	}
-	return events, nil
+	return nil
 }
 
-func watchZkPaths(paths []string, conn *zk.Conn) (zkData *ZkData, events []<-chan zk.Event, err error) {
+func CreateZkData(paths []string, conn *zk.Conn) (zkData *ZkData, err error) {
 	zkData = &ZkData{
 		Conn: conn,
 		Data: make(map[string]ZkNode),
 	}
-	events = make([]<-chan zk.Event, 0, 32)
-	for _, _path := range paths {
-		childs, stat, event, err := conn.ChildrenW(_path)
-		if err != nil {
-			return nil, nil, err
-		}
-		bData, _, err := conn.Get(_path)
-		if err != nil {
-			return nil, nil, err
-		}
-		val := string(bData)
-		node := ZkNode{
-			Path:   _path,
-			Stat:   *stat,
-			Childs: childs,
-			Value:  val,
-		}
-		zkData.Data[_path] = node
-		if len(childs) > 0 {
-			subPaths := make([]string, 0, 10)
-			for _, v := range childs {
-				subPath := path.Join(_path, v)
-				subPaths = append(subPaths, subPath)
-			}
-			es, err := zkData.fillDatas(subPaths)
-			if err != nil {
-				return nil, nil, err
-			}
-			events = append(events, es...)
-		}
-		events = append(events, event)
+	err = zkData.GetNodesW(paths)
+	if err != nil {
+		err = fmt.Errorf("watch nodes failed, cause by: %+v", err)
 	}
-	return zkData, events, nil
-}
-
-func listenZkEvents(eventChans []<-chan zk.Event) {
-	for _, eventChan := range eventChans {
-		go listenZkEvent(eventChan)
-	}
-}
-
-func listenZkEvent(eventChan <-chan zk.Event) {
-	fmt.Println("listenZkEvent starting...")
-	for {
-		event, isAlive := <-eventChan
-		if !isAlive {
-			fmt.Println("event closed.")
-			break
-		}
-		switch event.Type {
-		case zk.EventNodeCreated:
-			fmt.Println("create: " + event.Path)
-		case zk.EventNodeDeleted:
-			fmt.Println("delete: " + event.Path)
-		case zk.EventNodeDataChanged:
-			fmt.Println("change: " + event.Path)
-		case zk.EventNodeChildrenChanged:
-			fmt.Println("childenChanged: " + event.Path)
-		default:
-			fmt.Println(event)
-		}
-	}
+	return zkData, err
 }
 
 func rebuildDataFile(zkData *ZkData, tmplPath string, targetPath string) error {
