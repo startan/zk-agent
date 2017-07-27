@@ -1,4 +1,4 @@
 // Place your settings in this file to overwrite default and user settings.
 {
-    "go.gopath": "D:/Users/StAR/Documents/DevProjects/zk-agent"
+    "go.gopath": "${workspaceRoot}:/Users/tan/App/gopub"
 }
