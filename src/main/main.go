@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path"
 	"reflect"
 	"strconv"
@@ -64,6 +65,14 @@ func parseConfig(configPath string) (map[string]interface{}, error) {
 }
 
 func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
+	commandOpt, ok := config["shellCommand"]
+	var command string
+	if ok {
+		command, ok = commandOpt.(string)
+		if !ok {
+			return nil, errors.New("Invalid `shellCommand` format.")
+		}
+	}
 	zkServerOpt := config["zkServer"]
 	var zkServers []string
 	switch zkServerOpt.(type) {
@@ -145,22 +154,15 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			}
 			var err error
 			switch event.Type {
-			case zk.EventNodeDeleted:
-				fmt.Println("NodeDeleted: " + event.Path)
-				delete(kZkData.Data, event.Path)
-				err = rebuildDataFile(kZkData, tmpl, target)
 			case zk.EventNodeDataChanged:
 				fmt.Println("NodeDataChanged: " + event.Path)
-				kZkData.GetNodesW([]string{event.Path})
-				err = rebuildDataFile(kZkData, tmpl, target)
+				err = reload(event.Path, tmpl, target, command)
 			case zk.EventNodeChildrenChanged:
 				fmt.Println("NodeChildrenChanged: " + event.Path)
-				kZkData.GetNodesW([]string{event.Path})
-				err = rebuildDataFile(kZkData, tmpl, target)
+				err = reload(event.Path, tmpl, target, command)
 			default:
 				fmt.Println(event)
 			}
-			// TODO NodeDeleted NodeChildrenChanged 两个事件重叠
 			if err != nil {
 				// Warn
 				fmt.Println(err)
@@ -170,6 +172,35 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 	}()
 
 	return keventChan, nil
+}
+
+func reload(nodePath string, tmplPath string, targetPath string, commandTmpl string) error {
+	kZkData.GetNodesW([]string{nodePath})
+	// TODO: Rebuild and invoke command when zkSwitcherPath change
+	err := rebuildDataFile(kZkData, tmplPath, targetPath)
+	if err != nil {
+		return fmt.Errorf("Rebuild data file failed, cause by: %+v", err)
+	}
+	// build command
+	if len(commandTmpl) == 0 {
+		return nil
+	}
+	tmpl, err := template.New("command").Funcs(template.FuncMap{"dat": getByKey}).Parse(commandTmpl)
+	if err != nil {
+		return err
+	}
+	buffer := bytes.NewBuffer([]byte{})
+	tmpl.Execute(buffer, kZkData.Data)
+	command := buffer.String()
+
+	// invoke command
+	cmd := exec.Command("sh", "-c", command)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("Execute command `%+v` failed, cause by: %+v", command, err)
+	}
+	fmt.Println(string(out))
+	return nil
 }
 
 type ZkData struct {
@@ -192,9 +223,27 @@ func (self *ZkData) String() string {
 	return ""
 }
 
+func (self *ZkData) deleteOldData(nodePath string) {
+	node, ok := self.Data[nodePath]
+	if !ok {
+		return
+	}
+	if len(node.Childs) == 0 {
+		delete(self.Data, nodePath)
+		return
+	}
+	for _, childName := range node.Childs {
+		childPath := path.Join(nodePath, childName)
+		self.deleteOldData(childPath)
+	}
+}
+
 func (self *ZkData) GetNodesW(paths []string) (err error) {
 	conn := self.Conn
 	for _, _path := range paths {
+		// Clean old data first
+		self.deleteOldData(_path)
+
 		childs, stat, _, err := conn.ChildrenW(_path)
 		if err != nil {
 			return err
@@ -233,7 +282,7 @@ func CreateZkData(paths []string, conn *zk.Conn) (zkData *ZkData, err error) {
 	}
 	err = zkData.GetNodesW(paths)
 	if err != nil {
-		err = fmt.Errorf("watch nodes failed, cause by: %+v", err)
+		err = fmt.Errorf("Watch nodes failed, cause by: %+v", err)
 	}
 	return zkData, err
 }

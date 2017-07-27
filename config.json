@@ -1,8 +1,9 @@
 {
     "zkServer": "127.0.0.1:2181",
     "zkDataPath": "/nginx",
+    "zkSwitcherPath": "/nginx/reload",
     "combine": [
-        "D:/Users/StAR/Documents/DevProjects/zk-agent/test.tmpl#D:/Users/StAR/Documents/DevProjects/zk-agent/test.cnf"
+        "/Users/tan/Documents/GitHub/zk-agent/test.tmpl#/Users/tan/Documents/GitHub/zk-agent/test.cnf"
     ],
-    "command": ""
+    "shellCommand": "echo \"{{ dat . \"/nginx/dmz\" \"Childs\" }}\""
 }
