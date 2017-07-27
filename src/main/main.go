@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/template"
@@ -194,7 +195,13 @@ func reload(nodePath string, tmplPath string, targetPath string, commandTmpl str
 	command := buffer.String()
 
 	// invoke command
-	cmd := exec.Command("sh", "-c", command)
+	var cmd *exec.Cmd
+	switch os := runtime.GOOS; os {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", command)
+	default:
+		cmd = exec.Command("sh", "-c", command)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Execute command `%+v` failed, cause by: %+v", command, err)
