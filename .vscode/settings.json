@@ -1,4 +1,4 @@
 // Place your settings in this file to overwrite default and user settings.
 {
-    "go.gopath": "${workspaceRoot}:/Users/tan/App/gopub"
+    "go.gopath": "${workspaceRoot};C:/Users/StAR/Documents/DevProjects/gopath"
 }

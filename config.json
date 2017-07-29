@@ -1,9 +1,9 @@
 {
     "zkServer": "127.0.0.1:2181",
     "zkDataPath": "/nginx",
-    "zkSwitcherPath": "/nginx/reload",
     "combine": [
-        "/Users/tan/Documents/GitHub/zk-agent/test.tmpl#/Users/tan/Documents/GitHub/zk-agent/test.cnf"
+        "test.tmpl#test.cnf"
     ],
-    "shellCommand": "echo \"{{ dat . \"/nginx/dmz\" \"Childs\" }}\""
+    "pathMatcher": "^/nginx/dmz.*",
+    "shellCommand": "echo {{ dat . \"/nginx/dmz\" \"Childs\" }}"
 }

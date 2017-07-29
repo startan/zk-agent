@@ -11,8 +11,20 @@
             "host": "127.0.0.1",
             "program": "${workspaceRoot}/src/main/main.go",
             "trace": true,
-            "env": {
-                "GOPATH": "${workspaceRoot}:/Users/tan/App/gopub"
+            "windows": {
+                "env": {
+                    "GOPATH": "${workspaceRoot};${env:GOPATH}"
+                }
+            },
+            "osx": {
+                "env": {
+                    "GOPATH": "${workspaceRoot}:${env:GOPATH}"
+                }
+            },
+            "linux": {
+                "env": {
+                    "GOPATH": "${workspaceRoot}:${env:GOPATH}"
+                }
             },
             "args": [],
             "showLog": true

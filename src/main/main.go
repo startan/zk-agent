@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ func main() {
 	fmt.Println("Welcome to zk-agent.")
 	configPath := flag.String("config", "", "Location of configuration file")
 	// FOR Debug begin
-	debugPath := "/Users/tan/Documents/GitHub/zk-agent/config.json"
+	debugPath := "config.json"
 	configPath = &debugPath
 	// FOR Debug end
 
@@ -74,6 +75,15 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			return nil, errors.New("Invalid `shellCommand` format.")
 		}
 	}
+	matcherOpt, ok := config["pathMatcher"]
+	var matcher string
+	if ok {
+		matcher, ok = matcherOpt.(string)
+		if !ok {
+			return nil, errors.New("Invalid `pathMatcher` format.")
+		}
+	}
+
 	zkServerOpt := config["zkServer"]
 	var zkServers []string
 	switch zkServerOpt.(type) {
@@ -92,7 +102,6 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	// defer conn.Close()
 
 	// get and watch data
 	zkDataPathOpt := config["zkDataPath"]
@@ -112,7 +121,6 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TODO Event listener
 	kZkData = zkData
 
 	// Generate target file
@@ -157,10 +165,10 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 			switch event.Type {
 			case zk.EventNodeDataChanged:
 				fmt.Println("NodeDataChanged: " + event.Path)
-				err = reload(event.Path, tmpl, target, command)
+				err = reload(matcher, event.Path, tmpl, target, command)
 			case zk.EventNodeChildrenChanged:
 				fmt.Println("NodeChildrenChanged: " + event.Path)
-				err = reload(event.Path, tmpl, target, command)
+				err = reload(matcher, event.Path, tmpl, target, command)
 			default:
 				fmt.Println(event)
 			}
@@ -175,9 +183,20 @@ func zkAgentStart(config map[string]interface{}) (<-chan zk.Event, error) {
 	return keventChan, nil
 }
 
-func reload(nodePath string, tmplPath string, targetPath string, commandTmpl string) error {
+func reload(pathMatcher string, nodePath string, tmplPath string, targetPath string, commandTmpl string) error {
 	kZkData.GetNodesW([]string{nodePath})
 	// TODO: Rebuild and invoke command when zkSwitcherPath change
+	if len(pathMatcher) > 0 {
+		ok, err := regexp.Match(pathMatcher, []byte(nodePath))
+		if err != nil {
+			return fmt.Errorf("The NodePath match failed, cause by: %+v", err)
+		}
+		if !ok {
+			// If it does not match, then terminate the reload operation.
+			fmt.Println("The NodePath does not match.")
+			return nil
+		}
+	}
 	err := rebuildDataFile(kZkData, tmplPath, targetPath)
 	if err != nil {
 		return fmt.Errorf("Rebuild data file failed, cause by: %+v", err)
