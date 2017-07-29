@@ -1,7 +1,7 @@
 package main
 
 import (
-	za "ZkAgent"
+	za "ZkAgent/server"
 	"encoding/json"
 	"flag"
 	"fmt"
